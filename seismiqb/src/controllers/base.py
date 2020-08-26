@@ -312,7 +312,7 @@ class BaseController:
         raise NotImplementedError('Yet to be implemented!')
 
     # Inference on a chosen set of data
-    def inference(self, dataset, version=1, orientation='i', overlap_factor=2, heights_range=None,
+    def inference(self, dataset, version=1, orientation='i', overlap_factor=2, heights=None,
                   batch_size_multiplier=1, **kwargs):
         """ Make inference with trained/loaded model on supplied dataset.
         Works by splitting the into `crop_shape` chunks, making predict for each of them,
@@ -345,7 +345,7 @@ class BaseController:
             If 'ix', then both of previous approaches applied, and results are merged.
         overlap_factor : number
             Overlapping ratio of successive crops. Can be seen as `how many crops would cross every through point`.
-        heights_range : None or sequence of two ints
+        heights : None or sequence of two ints
             If None, then heights are inffered: from minimum of heights of all horizons in dataset to the maximum.
             If sequence of two ints, heights to inference on.
 
@@ -363,15 +363,15 @@ class BaseController:
 
         if len(orientation) == 1:
             horizons = method(dataset, orientation=orientation, overlap_factor=overlap_factor,
-                              heights_range=heights_range, **kwargs)
+                              heights=heights, **kwargs)
         else:
             horizons_i = method(dataset, orientation='i', overlap_factor=overlap_factor,
-                                heights_range=heights_range, **kwargs)
+                                heights=heights, **kwargs)
             gc.collect()
             self.log('Done i-inference')
 
             horizons_x = method(dataset, orientation='x', overlap_factor=overlap_factor,
-                                heights_range=heights_range, **kwargs)
+                                heights=heights, **kwargs)
             gc.collect()
             self.log('Done x-inference')
 
@@ -391,18 +391,19 @@ class BaseController:
         self.batch_size = bs
         torch.cuda.empty_cache()
 
-    def make_inference_ranges(self, dataset, heights_range):
+    def make_inference_ranges(self, dataset, ilines, xlines, heights):
         """ Ranges of inference. """
         geometry = dataset.geometries[0]
-        spatial_ranges = [[0, item-1] for item in geometry.cube_shape[:2]]
-        if heights_range is None:
+        lines = [ilines, xlines]
+        spatial_ranges = [line or [0, cube_len-1] for line, cube_len in zip(lines, geometry.cube_shape[:2])]
+        if heights is None:
             if self.targets:
                 min_height = max(0, min(horizon.h_min for horizon in self.targets) - 100)
                 max_height = min(geometry.depth-1, max(horizon.h_max for horizon in self.targets) + 100)
-                heights_range = [min_height, max_height]
+                heights = [min_height, max_height]
             else:
-                heights_range = [0, geometry.depth-1]
-        return spatial_ranges, heights_range
+                heights = [0, geometry.depth-1]
+        return spatial_ranges, heights
 
     def make_inference_config(self, orientation):
         """ Parameters depending on orientation. """
@@ -418,17 +419,17 @@ class BaseController:
         return config, crop_shape_grid
 
 
-    def inference_0(self, dataset, heights_range=None, orientation='i', overlap_factor=2,
-                    filtering_matrix=None, filter_threshold=0, **kwargs):
+    def inference_0(self, dataset, ilines=None, xlines=None, heights=None, orientation='i', overlap_factor=2,
+                    filtering_matrix=None, filter_threshold=0, minsize=50, **kwargs):
         """ Inference on chunks, assemble into massive 3D array, extract horizon surface. """
         _ = kwargs
         geometry = dataset.geometries[0]
-        spatial_ranges, heights_range = self.make_inference_ranges(dataset, heights_range)
+        spatial_ranges, heights = self.make_inference_ranges(dataset, ilines, xlines, heights)
         config, crop_shape_grid = self.make_inference_config(orientation)
 
         # Actual inference
         dataset.make_grid(dataset.indices[0], crop_shape_grid,
-                          *spatial_ranges, heights_range,
+                          *spatial_ranges, heights,
                           batch_size=self.batch_size,
                           overlap_factor=overlap_factor,
                           filtering_matrix=filtering_matrix,
@@ -443,10 +444,10 @@ class BaseController:
                                                 order=config.get('order'))
 
         # Convert to Horizon instances
-        return Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=50)
+        return Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=minsize)
 
-    def inference_1(self, dataset, heights_range=None, orientation='i', overlap_factor=2,
-                    chunk_size=100, chunk_overlap=0.2, filtering_matrix=None, filter_threshold=0, **kwargs):
+    def inference_1(self, dataset, heights_range=None, orientation='i', overlap_factor=2, chunk_size=100,
+                    chunk_overlap=0.2, filtering_matrix=None, filter_threshold=0, minsize=50, **kwargs):
         """ Split area for inference into `big` chunks, inference on each of them, merge results. """
         _ = kwargs
         geometry = dataset.geometries[0]
@@ -478,7 +479,7 @@ class BaseController:
                                                     order=config.get('order'))
 
             # Extract Horizon instances
-            chunk_horizons = Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=50)
+            chunk_horizons = Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=minsize)
             horizons.extend(chunk_horizons)
 
             # Cleanup
