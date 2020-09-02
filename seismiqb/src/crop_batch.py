@@ -739,30 +739,6 @@ class SeismicCropBatch(Batch):
             copy_[x_:x_+patch_shape[0], h_:h_+patch_shape[1], :] = 0
         return copy_
 
-    @action
-    @inbatch_parallel(init='indices', post='_assemble', target='for')
-    def smart_cutout(self, ix, patch_shape, n, src='images'):
-        """ Change patches of data along the horizon to zeros.
-
-        Parameters
-        ----------
-        patch_shape : array-like
-            Shape or patches along each axis.
-        n : float
-            Number of patches to cut.
-        """
-        rnd = np.random.RandomState(int(n*100)).uniform
-        patch_shape = patch_shape.astype(int)
-        crop = self.get(ix, src)
-        mask = self.get(ix, 'masks')
-        copy_ = copy(crop)
-        for _ in range(int(n)):
-            x_ = int(rnd(max(crop.shape[0] - patch_shape[0], 1)))
-            _, heights = (np.where(mask[x_:x_+patch_shape[0], :, 0] > 0))
-            h_ = np.int(heights.mean())
-            copy_[x_:x_+patch_shape[0], h_:h_+patch_shape[1], :] = 0
-        return copy_
-
     @apply_parallel
     def rotate(self, crop, angle):
         """ Rotate crop along the first two axes.

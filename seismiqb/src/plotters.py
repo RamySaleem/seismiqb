@@ -229,7 +229,7 @@ class MatplotlibPlotter:
     def overlap(self, images, **kwargs):
         """ Plot several images on one canvas using matplotlib: render the first one in greyscale
         and the rest ones in 'rgb' channels, one channel for each image.
-        Supports- up to four images in total.
+        Supports up to four images in total.
 
         Parameters
         ----------

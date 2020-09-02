@@ -5,7 +5,7 @@
     - evaluating predictions
     - and more
 """
-#pylint: disable=import-error, no-name-in-module, wrong-import-position
+#pylint: disable=import-error, no-name-in-module, wrong-import-position, protected-access
 import os
 import gc
 import logging
@@ -268,7 +268,6 @@ class BaseController:
         -----
         Graph of loss over iterations.
         """
-        #pylint: disable=protected-access
         model_config = model_config or self.model_config
         device = device or self.device
 
@@ -286,6 +285,8 @@ class BaseController:
         model_pipeline = (self.get_train_template(**kwargs) << pipeline_config) << dataset
         batch = model_pipeline.next_batch(D('size'))
         self.log(f'Used batch size is: {self.batch_size}; actual batch size is: {len(batch)}')
+        self.log(f'Cache sizes: {[item.cache_size for item in dataset.geometries.values()]}')
+        self.log(f'Cache lengths: {[item.cache_length for item in dataset.geometries.values()]}')
         self.batch_size = bs
 
         model_pipeline.run(D('size'), n_iters=n_iters + np.random.randint(100),
@@ -295,15 +296,17 @@ class BaseController:
                   savepath=self.make_save_path('model_loss.png'))
 
         self.model_pipeline = model_pipeline
-
         last_loss = np.mean(model_pipeline.v('loss_history')[-50:])
         self.log(f'Train finished; last loss is {last_loss}')
-        self.log(f'Cache size: {[len(item._cached_load.cache()) for item in dataset.geometries.values()]}')
+        self.log(f'Cache sizes: {[item.cache_size for item in dataset.geometries.values()]}')
+        self.log(f'Cache lengths: {[len(item._cached_load.cache()) for item in dataset.geometries.values()]}')
 
         # Cleanup
         torch.cuda.empty_cache()
         self.model_pipeline.reset('variables')
         batch.images, batch.masks = None, None
+        for item in dataset.geometries.values():
+            item.reset_cache()
         return last_loss
 
     def load_model(self, path=None):
@@ -442,6 +445,12 @@ class BaseController:
         assembled_pred = dataset.assemble_crops(inference_pipeline.v('predicted_masks'),
                                                 order=config.get('order'))
 
+        # Log memory usage info and clean up
+        self.log(f'Cache sizes: {[item.cache_size for item in dataset.geometries.values()]}')
+        self.log(f'Cache lengths: {[item.cache_length for item in dataset.geometries.values()]}')
+        for item in dataset.geometries.values():
+            item.reset_cache()
+
         # Convert to Horizon instances
         return Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=50)
 
@@ -456,6 +465,7 @@ class BaseController:
         # Actual inference
         axis = np.argmin(crop_shape_grid[:2])
         iterator = range(spatial_ranges[axis][0], spatial_ranges[axis][1], int(chunk_size*(1 - chunk_overlap)))
+        self.log(f'Starting chunk {orientation} inference with {len(iterator)} chunks')
 
         horizons = []
         for chunk in self.make_pbar(iterator, desc=f'Inference on {geometry.name}| {orientation}'):
@@ -485,6 +495,11 @@ class BaseController:
             inference_pipeline.reset('variables')
             inference_pipeline = None
             gc.collect()
+
+        self.log(f'Cache sizes: {[item.cache_size for item in dataset.geometries.values()]}')
+        self.log(f'Cache lengths: {[item.cache_length for item in dataset.geometries.values()]}')
+        for item in dataset.geometries.values():
+            item.reset_cache()
 
         return Horizon.merge_list(horizons, mean_threshold=5.5, adjacency=3, minsize=500)
 
