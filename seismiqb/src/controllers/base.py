@@ -489,7 +489,7 @@ class BaseController:
         return Horizon.merge_list(horizons, mean_threshold=5.5, adjacency=3, minsize=500)
 
 
-    def evaluate(self, n=5, add_prefix=False, dump=False, supports=50, name=''):
+    def evaluate(self, n=5, add_prefix=False, dump=False, supports=50, name='', horizons=None):
         """ Assess quality of predictions, created by :meth:`.inference`, against targets and seismic data.
 
         Parameters
@@ -514,10 +514,11 @@ class BaseController:
         If targets are provided, also l1 differences.
         """
         #pylint: disable=cell-var-from-loop, invalid-name, protected-access
+        horizons = self.predictions if horizons is None else horizons
         results = []
         for i in range(n):
             info = {}
-            horizon = self.predictions[i]
+            horizon = horizons[i]
             horizon._horizon_metrics = None
             hm = HorizonMetrics((horizon, self.targets))
             prefix = [horizon.geometry.short_name, f'{i}_horizon'] if add_prefix else []
