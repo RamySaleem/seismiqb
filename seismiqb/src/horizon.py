@@ -14,9 +14,7 @@ from scipy.ndimage.morphology import binary_fill_holes, binary_erosion
 from scipy.ndimage import find_objects
 from skimage.measure import label
 
-from ..batchflow import HistoSampler
-
-from .utils import round_to_array, groupby_mean, groupby_min, groupby_max
+from .utils import round_to_array, groupby_mean, groupby_min, groupby_max, HorizonSampler
 from .plotters import plot_image
 
 
@@ -857,7 +855,7 @@ class Horizon:
         else:
             points = self.points
 
-        self.sampler = HistoSampler(np.histogramdd(points/self.cube_shape, bins=bins))
+        self.sampler = HorizonSampler(np.histogramdd(points/self.cube_shape, bins=bins))
 
 
     def add_to_mask(self, mask, locations=None, width=3, alpha=1, **kwargs):

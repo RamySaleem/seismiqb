@@ -2,11 +2,13 @@
 import numpy as np
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import ColorConverter
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def channelize_image(image, total_channels, n_channel=0, greyscale=False, opacity=None):
+def channelize_image(image, total_channels, color=None, greyscale=False, opacity=None):
     """ Channelize an image. Can be used to make an opaque rgb or grayscale image.
     """
     # case of a partially channelized image
@@ -22,8 +24,11 @@ def channelize_image(image, total_channels, n_channel=0, greyscale=False, opacit
         return background
 
     # case of non-channelized image
+    if isinstance(color, str):
+        color = ColorConverter().to_rgb(color)
     background = np.zeros((*image.shape, total_channels))
-    background[:, :, n_channel] = image
+    for i, value in enumerate(color):
+        background[:, :, i] = image * value
 
     # in case of greyscale make all 3 channels equal to supplied image
     if greyscale:
@@ -256,10 +261,13 @@ class MatplotlibPlotter:
                     'y' : 1.1,
                     'cmap': 'gray',
                     'fontsize': 20,
+                    'colors': ('red', 'green', 'blue'),
                     'opacity': 1.0,
                     'label': '', 'title': '', 'xlabel': '', 'ylabel': '',
                     'order_axes': (1, 0)}
         updated = {**defaults, **kwargs}
+        if isinstance(updated['opacity'], (int, float)):
+            updated['opacity'] = [updated['opacity']] * (len(images) - 1)
 
         # form different groups of kwargs
         figure_kwargs = filter_kwargs(updated, ['figsize', 'facecolor', 'dpi'])
@@ -289,9 +297,11 @@ class MatplotlibPlotter:
         if 'yticks' in updated:
             ax.set_yticks(yticks)
 
-        for img, n_channel in zip(images[1:], (0, 1, 2)):
+        for i, img in enumerate(images[1:]):
+            color = updated['colors'][i]
+            opacity = updated['opacity'][i]
             ax.imshow(channelize_image(np.transpose(img.squeeze(), axes=updated['order_axes']), total_channels=4,
-                                       n_channel=n_channel, opacity=updated['opacity']),
+                                       color=color, opacity=opacity),
                       extent=extent, **render_kwargs)
         plt.title(**label_kwargs)
 
@@ -612,6 +622,7 @@ class PlotlyPlotter:
         """
         # update defaults to make total dict of kwargs
         defaults = {'coloraxis_colorbar': {'title': 'amplitude'},
+                    'colors': ('red', 'green', 'blue'),
                     'opacity' : 1.0,
                     'title': 'Seismic inline',
                     'max_size' : 600,
@@ -633,9 +644,10 @@ class PlotlyPlotter:
         # manually combine first image in greyscale and the rest ones colored differently
         combined = channelize_image(255 * np.transpose(images[0], axes=updated['order_axes']),
                                     total_channels=4, greyscale=True)
-        for img, n_channel in zip(images[1:], (0, 1, 2)):
+        for i, img in enumerate(images[1:]):
+            color = updated['colors'][i]
             combined += channelize_image(255 * np.transpose(img, axes=updated['order_axes']),
-                                         total_channels=4, n_channel=n_channel, opacity=updated['opacity'])
+                                         total_channels=4, color=color, opacity=updated['opacity'])
         plot_data = go.Image(z=combined[slc], **render_kwargs) # plot manually combined image
 
         # plot the figure

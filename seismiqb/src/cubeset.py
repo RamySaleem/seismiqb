@@ -728,7 +728,7 @@ class SeismicCubeset(Dataset):
         self.orders_gen = lambda: next(orders_gen)
         self.grid_iters = - (-len(crops) // batch_size)
         self.grid_info = {'cube_name': cube_name,
-                          'geom': horizon.geometry}
+                          'geometry': horizon.geometry}
 
 
     def assemble_crops(self, crops, grid_info='grid_info', order=None, fill_value=0):

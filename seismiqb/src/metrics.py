@@ -527,7 +527,7 @@ class BaseSeismicMetric(Metrics):
             'spatial': self.spatial,
             'title': f'{title} for {self.name} on cube {self.cube_name}',
             'cmap': 'Reds',
-            'zmin': 0.0, 'zmax': np.max(quality_map),
+            'zmin': 0.0, 'zmax': np.nanmax(quality_map),
             'ignore_value': np.nan,
             'xlabel': 'INLINE_3D', 'ylabel': 'CROSSLINE_3D',
             **kwargs

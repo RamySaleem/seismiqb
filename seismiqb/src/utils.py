@@ -11,6 +11,7 @@ import pandas as pd
 import segyio
 
 from numba import njit, prange
+from ..batchflow import Sampler
 
 
 
@@ -575,3 +576,48 @@ def nb_mode(array, mask):
 
                 temp[il, xl] = element
     return temp
+
+
+class HorizonSampler(Sampler):
+    """ Compact version of histogram-based sampler for 3D points structure. """
+    def __init__(self, histogram, seed=None, **kwargs):
+        super().__init__(histogram, seed, **kwargs)
+        # Bins and their probabilities: keep only non-zero ones
+        bins = histogram[0]
+        probs = (bins / np.sum(bins)).reshape(-1)
+        self.nonzero_probs_idx = np.asarray(probs != 0.0).nonzero()[0]
+        self.nonzero_probs = probs[self.nonzero_probs_idx]
+
+        # Edges of bins: keep lengths and diffs between successive edges
+        self.edges = histogram[1]
+        self.lens_edges = np.array([len(edge) - 1 for edge in self.edges])
+        self.divisors = [np.array(self.lens_edges[i+1:]).astype(np.int64)
+                         for i, _ in enumerate(self.edges)]
+        self.shifts_edges = [np.diff(edge)[0] for edge in self.edges]
+
+        # Uniform sampler
+        self.state = np.random.RandomState(seed=seed)
+        self.state_sampler = self.state.uniform
+
+    def sample(self, size):
+        """ Generate random sample from histogram distribution. """
+        # Choose bin indices
+        indices = np.random.choice(self.nonzero_probs_idx, p=self.nonzero_probs, size=size)
+
+        # Convert bin indices to its starting coordinates
+        low = generate_points(self.edges, divisors=self.divisors, lengths=self.lens_edges, indices=indices)
+        high = low + self.shifts_edges
+        return self.state_sampler(low=low, high=high)
+
+@njit
+def generate_points(edges, divisors, lengths, indices):
+    """ Accelerate sampling method of `HorizonSampler`. """
+    low = np.zeros((len(indices), len(lengths)))
+
+    for i, idx in enumerate(indices):
+        for j, (edge, divisors_, length) in enumerate(zip(edges, divisors, lengths)):
+            idx_copy = idx
+            for divisor in divisors_:
+                idx_copy //= divisor
+            low[i, j] = edge[idx_copy % length]
+    return low

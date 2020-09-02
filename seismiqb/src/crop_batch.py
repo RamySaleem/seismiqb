@@ -8,8 +8,7 @@ import cv2
 from scipy.signal import butter, lfilter, hilbert
 from scipy.ndimage import gaussian_filter1d
 
-from ..batchflow import FilesIndex, Batch, action, inbatch_parallel, SkipBatchException
-from ..batchflow.batch_image import transform_actions # pylint: disable=no-name-in-module,import-error
+from ..batchflow import FilesIndex, Batch, action, inbatch_parallel, SkipBatchException, apply_parallel
 
 from .horizon import Horizon
 from .plotters import plot_image
@@ -22,10 +21,13 @@ SIZE_SALT = len(AFFIX) + SIZE_POSTFIX
 CHARS = string.ascii_uppercase + string.digits
 
 
-@transform_actions(prefix='_', suffix='_', wrapper='apply_transform')
 class SeismicCropBatch(Batch):
     """ Batch with ability to generate 3d-crops of various shapes."""
     components = None
+    apply_defaults = {
+        'target': 'for',
+        'post': '_assemble'
+    }
 
     def _init_component(self, *args, **kwargs):
         """ Create and preallocate a new attribute with the name ``dst`` if it
@@ -109,9 +111,14 @@ class SeismicCropBatch(Batch):
                 return res[item]
             return res
 
-        item = self.get_pos(None, component, item)
-        return super().get(item, component)
+        if item is not None:
+            data = getattr(self, component) if isinstance(component, str) else component
+            if isinstance(data, (np.ndarray, list)) and len(data) == len(self):
+                pos = np.where(self.indices == item)[0][0]
+                return data[pos]
 
+            return super().get(item, component)
+        return getattr(self, component)
 
     @action
     def crop(self, points, shape=None, direction=(0, 0, 0), side_view=False,
@@ -292,9 +299,9 @@ class SeismicCropBatch(Batch):
         dst : str
             Component of batch to put loaded crops in.
         """
-        geom = self.get(ix, 'geometries')
+        geometry = self.get(ix, 'geometries')
         location = self.get(ix, src)
-        return geom.load_crop(location, **kwargs)
+        return geometry.load_crop(location, **kwargs)
 
 
     @action
@@ -373,8 +380,7 @@ class SeismicCropBatch(Batch):
             Axis to project horizon to before computing mask area.
         """
         _ = threshold, passdown
-        pos = self.get_pos(None, src, ix)
-        mask = getattr(self, src)[pos]
+        mask = self.get(ix, src)
 
         reduced = np.max(mask, axis=axis) > 0.0
         return np.sum(reduced) / np.prod(reduced.shape)
@@ -426,8 +432,7 @@ class SeismicCropBatch(Batch):
         if not (src and dst):
             raise ValueError('Src and dst must be provided')
 
-        pos = self.get_pos(None, src, ix)
-        mask = getattr(self, src)[pos]
+        mask = self.get(ix, src)
         coords = np.where(mask > 0)
 
         if np.random.binomial(1, 1 - p) or len(coords[0]) == 0:
@@ -481,10 +486,9 @@ class SeismicCropBatch(Batch):
             If `q_clip`, then data is clipped to 0.01 and 0.99 quantiles and then divided by the
             maximum of absolute values of the two.
         """
-        pos = self.get_pos(None, src, ix)
-        comp_data = getattr(self, src)[pos]
-        geom = self.get(ix, 'geometries')
-        return geom.scaler(comp_data, mode)
+        data = self.get(ix, src)
+        geometry = self.get(ix, 'geometries')
+        return geometry.scaler(data, mode)
 
 
     @action
@@ -506,8 +510,7 @@ class SeismicCropBatch(Batch):
             raise ValueError('Src must contain at least two components to concatenate')
         result = []
         for component in src:
-            pos = self.get_pos(None, component, ix)
-            result.append(getattr(self, component)[pos])
+            result.append(self.get(ix, component))
         return np.concatenate(result, axis=axis)
 
     @action
@@ -535,15 +538,13 @@ class SeismicCropBatch(Batch):
         _ = dst, mean_threshold, adjacency, skip_merge
 
         # Threshold the mask, transpose and rotate the mask if needed
-        pos = self.get_pos(None, src, ix)
-        mask = getattr(self, src)[pos]
+        mask = self.get(ix, src)
         if np.array(order).reshape(-1, 3).shape[0] > 0:
-            order = order[pos]
+            order = self.get(ix, np.array(order).reshape(-1, 3))
         mask = np.transpose(mask, axes=order)
 
         geometry = self.get(ix, 'geometries')
         shifts = [self.get(ix, src_locations)[k].start for k in range(3)]
-
         horizons = Horizon.from_mask(mask, geometry=geometry, shifts=shifts, threshold=threshold,
                                      mode=mode, minsize=minsize, prefix=prefix)
         return horizons
@@ -581,7 +582,8 @@ class SeismicCropBatch(Batch):
         return self
 
 
-    def _adaptive_reshape_(self, crop, shape):
+    @apply_parallel
+    def adaptive_reshape(self, crop, shape):
         """ Changes axis of view to match desired shape.
         Must be used in combination with `side_view` argument of `crop` action.
 
@@ -594,7 +596,8 @@ class SeismicCropBatch(Batch):
             return crop.transpose([1, 0, 2])
         return crop
 
-    def _shift_masks_(self, crop, n_segments=3, max_shift=4, max_len=10):
+    @apply_parallel
+    def shift_masks(self, crop, n_segments=3, max_shift=4, max_len=10):
         """ Randomly shift parts of the crop up or down.
 
         Parameters
@@ -623,7 +626,8 @@ class SeismicCropBatch(Batch):
             crop[:, begin:min(begin + length, crop.shape[1]), :] = shifted_segment
         return crop
 
-    def _bend_masks_(self, crop, angle=10):
+    @apply_parallel
+    def bend_masks(self, crop, angle=10):
         """ Rotate part of the mask on a given angle.
         Must be used for crops in (xlines, heights, inlines) format.
         """
@@ -658,11 +662,13 @@ class SeismicCropBatch(Batch):
         return combined
 
 
-    def _transpose_(self, crop, order):
+    @apply_parallel
+    def transpose(self, crop, order):
         """ Change order of axis. """
         return np.transpose(crop, order)
 
-    def _rotate_axes_(self, crop):
+    @apply_parallel
+    def rotate_axes(self, crop):
         """ The last shall be first and the first last.
 
         Notes
@@ -675,7 +681,8 @@ class SeismicCropBatch(Batch):
         crop_ = np.swapaxes(crop_, 1, 2)
         return crop_
 
-    def _add_axis_(self, crop):
+    @apply_parallel
+    def add_axis(self, crop):
         """ Add new axis.
 
         Notes
@@ -685,7 +692,8 @@ class SeismicCropBatch(Batch):
         """
         return crop[..., np.newaxis]
 
-    def _additive_noise_(self, crop, scale):
+    @apply_parallel
+    def additive_noise(self, crop, scale):
         """ Add random value to each entry of crop. Added values are centered at 0.
 
         Parameters
@@ -697,7 +705,8 @@ class SeismicCropBatch(Batch):
         noise = scale * rng.standard_normal(dtype=np.float32, size=crop.shape)
         return crop + noise
 
-    def _multiplicative_noise_(self, crop, scale):
+    @apply_parallel
+    def multiplicative_noise(self, crop, scale):
         """ Multiply each entry of crop by random value, centered at 1.
 
         Parameters
@@ -709,7 +718,8 @@ class SeismicCropBatch(Batch):
         noise = 1 + scale * rng.standard_normal(dtype=np.float32, size=crop.shape)
         return crop * noise
 
-    def _cutout_2d_(self, crop, patch_shape, n):
+    @apply_parallel
+    def cutout_2d(self, crop, patch_shape, n):
         """ Change patches of data to zeros.
 
         Parameters
@@ -729,7 +739,8 @@ class SeismicCropBatch(Batch):
             copy_[x_:x_+patch_shape[0], h_:h_+patch_shape[1], :] = 0
         return copy_
 
-    def _rotate_(self, crop, angle):
+    @apply_parallel
+    def rotate(self, crop, angle):
         """ Rotate crop along the first two axes.
 
         Parameters
@@ -741,7 +752,8 @@ class SeismicCropBatch(Batch):
         matrix = cv2.getRotationMatrix2D((shape[1]//2, shape[0]//2), angle, 1)
         return cv2.warpAffine(crop, matrix, (shape[1], shape[0])).reshape(shape)
 
-    def _flip_(self, crop, axis=0, seed=0.1, threshold=0.5):
+    @apply_parallel
+    def flip(self, crop, axis=0, seed=0.1, threshold=0.5):
         """ Flip crop along the given axis.
 
         Parameters
@@ -754,7 +766,8 @@ class SeismicCropBatch(Batch):
             return cv2.flip(crop, axis).reshape(crop.shape)
         return crop
 
-    def _scale_2d_(self, crop, scale):
+    @apply_parallel
+    def scale_2d(self, crop, scale):
         """ Zoom in or zoom out along the first two axes of crop.
 
         Parameters
@@ -766,7 +779,8 @@ class SeismicCropBatch(Batch):
         matrix = cv2.getRotationMatrix2D((shape[1]//2, shape[0]//2), 0, scale)
         return cv2.warpAffine(crop, matrix, (shape[1], shape[0])).reshape(shape)
 
-    def _affine_transform_(self, crop, alpha_affine=10):
+    @apply_parallel
+    def affine_transform(self, crop, alpha_affine=10):
         """ Perspective transform. Moves three points to other locations.
         Guaranteed not to flip image or scale it more than 2 times.
 
@@ -793,7 +807,8 @@ class SeismicCropBatch(Batch):
         matrix = cv2.getAffineTransform(pts1, pts2)
         return cv2.warpAffine(crop, matrix, (shape[1], shape[0])).reshape(crop.shape)
 
-    def _perspective_transform_(self, crop, alpha_persp):
+    @apply_parallel
+    def perspective_transform(self, crop, alpha_persp):
         """ Perspective transform. Moves four points to other four.
         Guaranteed not to flip image or scale it more than 2 times.
 
@@ -820,7 +835,8 @@ class SeismicCropBatch(Batch):
         matrix = cv2.getPerspectiveTransform(pts1, pts2)
         return cv2.warpPerspective(crop, matrix, (shape[1], shape[0])).reshape(crop.shape)
 
-    def _elastic_transform_(self, crop, alpha=40, sigma=4):
+    @apply_parallel
+    def elastic_transform(self, crop, alpha=40, sigma=4):
         """ Transform indexing grid of the first two axes.
 
         Parameters
@@ -856,7 +872,8 @@ class SeismicCropBatch(Batch):
                                   interpolation=cv2.INTER_LINEAR)
         return distorted_img.reshape(crop.shape)
 
-    def _bandwidth_filter_(self, crop, lowcut=None, highcut=None, fs=1, order=3):
+    @apply_parallel
+    def bandwidth_filter(self, crop, lowcut=None, highcut=None, fs=1, order=3):
         """ Keep only frequences between lowcut and highcut.
 
         Notes
@@ -883,11 +900,13 @@ class SeismicCropBatch(Batch):
             b, a = butter(order, [lowcut / nyq, highcut / nyq], btype='band')
         return lfilter(b, a, crop, axis=1)
 
-    def _sign_(self, crop):
+    @apply_parallel
+    def sign(self, crop):
         """ Element-wise indication of the sign of a number. """
         return np.sign(crop)
 
-    def _analytic_transform_(self, crop, axis=1, mode='phase'):
+    @apply_parallel
+    def analytic_transform(self, crop, axis=1, mode='phase'):
         """ Compute instantaneous phase or frequency via the Hilbert transform.
 
         Parameters
@@ -908,8 +927,8 @@ class SeismicCropBatch(Batch):
             return np.diff(phase, axis=axis, prepend=0) / (2*np.pi)
         raise ValueError('Unknown `mode` parameter.')
 
-
-    def _gaussian_filter_(self, crop, axis=1, sigma=2, order=0):
+    @apply_parallel
+    def gaussian_filter(self, crop, axis=1, sigma=2, order=0):
         """ Apply a gaussian filter along specified axis. """
         return gaussian_filter1d(crop, sigma=sigma, axis=axis, order=order)
 
