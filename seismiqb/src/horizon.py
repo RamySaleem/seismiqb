@@ -936,7 +936,7 @@ class Horizon:
         elif scale is False:
             scale = lambda array: array
 
-        for h_start in range(max(low, self.h_min), self.h_max, chunk_size):
+        for h_start in range(max(low, self.h_min), self.h_max + 1, chunk_size):
             h_end = min(h_start + chunk_size, self.h_max + 1)
 
             # Get chunk from the cube (depth-wise)

@@ -449,8 +449,12 @@ class BaseController:
         # Log memory usage info and clean up
         self.log(f'Cache sizes: {[item.cache_size for item in dataset.geometries.values()]}')
         self.log(f'Cache lengths: {[item.cache_length for item in dataset.geometries.values()]}')
+
+        inference_pipeline.reset('variables')
+        inference_pipeline = None
         for item in dataset.geometries.values():
             item.reset_cache()
+        gc.collect()
 
         # Convert to Horizon instances
         return Horizon.from_mask(assembled_pred, dataset.grid_info, threshold=0.5, minsize=minsize)
@@ -481,8 +485,7 @@ class BaseController:
                               filter_threshold=filter_threshold)
 
             inference_pipeline = (self.get_inference_template() << config) << dataset
-            inference_pipeline.run(D('size'), n_iters=dataset.grid_iters, bar=self.bar,
-                                   bar_desc=f'Inference on {geometry.name} | {orientation}')
+            inference_pipeline.run(D('size'), n_iters=dataset.grid_iters)
 
             # Assemble crops together in accordance to the created grid
             assembled_pred = dataset.assemble_crops(inference_pipeline.v('predicted_masks'),
@@ -501,6 +504,7 @@ class BaseController:
         self.log(f'Cache lengths: {[item.cache_length for item in dataset.geometries.values()]}')
         for item in dataset.geometries.values():
             item.reset_cache()
+        gc.collect()
 
         return Horizon.merge_list(horizons, mean_threshold=5.5, adjacency=3, minsize=500)
 
