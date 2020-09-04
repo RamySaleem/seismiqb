@@ -190,8 +190,12 @@ class SeismicGeometry:
         with h5py.File(path_meta, "a") as file_meta:
             # Save all the necessary attributes to the `info` group
             for attr in self.PRESERVED + self.PRESERVED_LAZY:
-                if hasattr(self, attr) and getattr(self, attr) is not None:
-                    file_meta['/info/' + attr] = getattr(self, attr)
+                try:
+                    if hasattr(self, attr) and getattr(self, attr) is not None:
+                        file_meta['/info/' + attr] = getattr(self, attr)
+                except ValueError:
+                    # Raised when you try to store post-stack descriptors for pre-stack cube
+                    pass
 
     def load_meta(self):
         """ Retrieve stored stats from disk. """
@@ -361,7 +365,7 @@ class SeismicGeometry:
 
     @property
     def cache_length(self):
-        """ Total size of cached slides. """
+        """ Total amount of cached slides. """
         if self.structured is False:
             method = self.load_slide
         else:
@@ -499,6 +503,67 @@ class SeismicGeometry:
             **kwargs
         }
         plot_image(data, backend='matplotlib', bins=bins, mode='histogram', **kwargs)
+
+
+    # Convert HDF5 to SEG-Y
+    def make_sgy(self, path_hdf5=None, path_spec=None, postfix='',
+                 remove_hdf5=False, zip_result=True, path_segy=None):
+        """ Convert HDF5 cube to SEG-Y format with current geometry spec.
+
+        Parameters
+        ----------
+        path_hdf5 : str
+            Path to load hdf5 file from. File must have a `cube` key where cube data is stored.
+        path_spec : str
+            Path to load segy file from with geometry spec.
+        path_segy : str
+            Path to store converted cube. By default, new cube is stored right next to original.
+        postfix : str
+            Postfix to add to the name of resulting cube.
+        """
+        path_segy = path_segy or (os.path.splitext(path_hdf5)[0] + postfix + '.sgy')
+        if not path_spec:
+            if hasattr(self, 'segy_path'):
+                path_spec = self.segy_path
+            else:
+                path_spec = os.path.splitext(self.path) + '.sgy'
+
+        # By default, if path_hdf5 is not provided, `temp.hdf5` next to self.path will be used
+        if path_hdf5 is None:
+            path_hdf5 = os.path.join(os.path.dirname(self.path), 'temp.hdf5')
+
+        with h5py.File(path_hdf5, 'r') as src:
+            cube_hdf5 = src['cube']
+
+            with segyio.open(path_spec, 'r', strict=False) as segy:
+                segy.mmap()
+                spec = segyio.spec()
+                spec.sorting = int(segy.sorting)
+                spec.format = int(segy.format)
+                spec.samples = range(self.depth)
+                spec.ilines = self.ilines
+                spec.xlines = self.xlines
+
+                with segyio.create(path_segy, spec) as dst_file:
+                    # Copy all textual headers, including possible extended
+                    for i in range(1 + segy.ext_headers):
+                        dst_file.text[i] = segy.text[i]
+
+                    c = 0
+                    for i, _ in tqdm(enumerate(spec.ilines)):
+                        for x, _ in enumerate(spec.xlines):
+                            dst_file.header[c] = segy.header[c]
+                            dst_file.trace[c] = cube_hdf5[i, x, :]
+                            c += 1
+                    dst_file.bin = {segyio.BinField.Traces: c}
+
+        if remove_hdf5:
+            os.remove(path_hdf5)
+
+        if zip_result:
+            dir_name = os.path.dirname(os.path.abspath(path_segy))
+            file_name = os.path.basename(path_segy)
+            shutil.make_archive(os.path.splitext(path_segy)[0], 'zip', dir_name, file_name)
 
 
 class SeismicGeometrySEGY(SeismicGeometry):
